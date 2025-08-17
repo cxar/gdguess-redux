@@ -2,6 +2,7 @@
 
 Update this table whenever docs change.
 
+- AGENTS.md
 - DOCS_POLICY.md
 - DECISIONS.md
 - CHANGELOG.md

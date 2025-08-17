@@ -1,11 +1,107 @@
-import argparse
+from __future__ import annotations
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", required=True)
-    parser.add_argument("--out", required=True)
-    args = parser.parse_args()
-    print("stub: build_manifest", args)
+import argparse
+import concurrent.futures as cf
+import re
+import sys
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+import soundfile as sf
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@dataclass(frozen=True)
+class Probe:
+    date_id: str
+    relpath: str
+    sr: int
+    duration_s: float
+
+
+def list_audio_files(root: Path, exts: tuple[str, ...]) -> Iterable[tuple[str, Path]]:
+    for date_dir in root.iterdir():
+        if not date_dir.is_dir():
+            continue
+        date_id = date_dir.name
+        if not DATE_RE.match(date_id):
+            continue
+        for ext in exts:
+            for p in date_dir.rglob(f"*.{ext}"):
+                if p.is_file():
+                    yield date_id, p
+
+
+def probe_file(root: Path, date_id: str, p: Path) -> Probe | None:
+    try:
+        info = sf.info(str(p))
+        duration_s = float(info.frames) / float(info.samplerate)
+        relpath = str(p.relative_to(root))
+        return Probe(date_id=date_id, relpath=relpath, sr=int(info.samplerate), duration_s=duration_s)
+    except Exception:
+        return None
+
+
+def uuid5_for_relpath(root: Path, relpath: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root.as_posix()}/{relpath}"))
+
+
+def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int) -> pd.DataFrame:
+    rows: list[Probe] = []
+    with cf.ThreadPoolExecutor(max_workers=num_workers) as ex:
+        futs = [ex.submit(probe_file, root, date_id, p) for date_id, p in files]
+        for fut in cf.as_completed(futs):
+            pr = fut.result()
+            if pr is not None and pr.duration_s > 0 and pr.sr > 0:
+                rows.append(pr)
+    if not rows:
+        return pd.DataFrame(columns=["date_id", "file_id", "relpath", "sr", "duration_s"])  # empty
+    df = pd.DataFrame([r.__dict__ for r in rows])
+    df["file_id"] = [uuid5_for_relpath(root, rp) for rp in df["relpath"]]
+    # enforce dtypes
+    df = df[["date_id", "file_id", "relpath", "sr", "duration_s"]]
+    df["date_id"] = df["date_id"].astype("string")
+    df["file_id"] = df["file_id"].astype("string")
+    df["relpath"] = df["relpath"].astype("string")
+    df["sr"] = df["sr"].astype("int32")
+    df["duration_s"] = df["duration_s"].astype("float64")
+    return df
+
+
+def write_table(df: pd.DataFrame, out: Path, fmt: str) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "parquet" or out.suffix.lower() == ".parquet":
+        df.to_parquet(out, index=False)
+    elif fmt == "csv" or out.suffix.lower() == ".csv":
+        df.to_csv(out, index=False)
+    else:
+        raise ValueError(f"Unsupported format: {fmt}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    import os
+
+    ap = argparse.ArgumentParser(description="Build audio manifest from date-organized tree")
+    ap.add_argument("--root", required=True, help="Data root containing YYYY-MM-DD dirs")
+    ap.add_argument("--out", required=True, help="Output path (.parquet or .csv)")
+    ap.add_argument("--format", default="parquet", choices=["parquet", "csv"], help="Output format")
+    ap.add_argument("--exts", default="flac,wav,mp3", help="Comma-separated extensions to include")
+    ap.add_argument("--num-workers", type=int, default=max(1, (os.cpu_count() or 4)), help="Parallel workers")
+    args = ap.parse_args(argv)
+
+    root = Path(args.root).resolve()
+    out = Path(args.out)
+    exts = tuple(e.strip().lstrip(".") for e in args.exts.split(",") if e.strip())
+
+    files = list(list_audio_files(root, exts))
+    df = build_df(root, files, args.num_workers)
+    write_table(df, out, args.format)
+    print(f"Wrote {len(df)} rows to {out}")
+
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

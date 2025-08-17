@@ -28,6 +28,7 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 addopts = "-q"
+pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["src"]
