@@ -98,17 +98,34 @@ def uuid5_for_relpath(root: Path, relpath: str) -> str:
 
 
 def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int, log_errors: str | None = None) -> pd.DataFrame:
+    import time
+    
     rows: list[Probe] = []
     skipped_files: list[Path] = []
+    total_files = len(files)
+    
+    print(f"Processing {total_files} files with {num_workers} workers...")
+    start_time = time.time()
     
     with cf.ThreadPoolExecutor(max_workers=num_workers) as ex:
         futs = [(date_id, p, ex.submit(probe_file, root, date_id, p)) for date_id, p in files]
-        for date_id, p, fut in futs:
+        
+        for i, (date_id, p, fut) in enumerate(futs):
             pr = fut.result()
             if pr is not None and pr.duration_s > 0:
                 rows.append(pr)
             else:
                 skipped_files.append(p)
+            
+            # Progress update every 100 files or at end
+            if (i + 1) % 100 == 0 or (i + 1) == total_files:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                eta_seconds = (total_files - (i + 1)) / rate if rate > 0 else 0
+                eta_min = int(eta_seconds // 60)
+                eta_sec = int(eta_seconds % 60)
+                percent = ((i + 1) / total_files) * 100
+                print(f"Progress: {i+1}/{total_files} ({percent:.1f}%) | Rate: {rate:.1f} files/s | ETA: {eta_min}m{eta_sec:02d}s | Success: {len(rows)} | Skipped: {len(skipped_files)}")
     
     # Log skipped files if requested
     if log_errors and skipped_files:
