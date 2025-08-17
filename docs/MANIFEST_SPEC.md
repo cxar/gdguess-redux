@@ -4,7 +4,7 @@ Columns:
 - date_id: str (YYYY-MM-DD)
 - file_id: UUID5 (str; namespace URL, deterministic from relpath)
 - relpath: str (path relative to root)
-- sr: int
+- sr: int (may be -1 if unknown from ffprobe)
 - duration_s: float
 
 Invariants:

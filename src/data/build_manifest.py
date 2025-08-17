@@ -68,53 +68,55 @@ def _probe_ffprobe(path: Path) -> tuple[int | None, float | None]:
 
 def probe_file(root: Path, date_id: str, p: Path) -> Probe | None:
     relpath = str(p.relative_to(root))
-    # 1) Prefer ffprobe to avoid decoder crashes
-    sr, dur = _probe_ffprobe(p)
-    if dur and dur > 0:
-        return Probe(date_id=date_id, relpath=relpath, sr=int(sr or -1), duration_s=float(dur))
-    # 2) Try soundfile (libsndfile)
+    ext = p.suffix.lower()
+
+    # MP3: use ffprobe only (avoid mpg123)
+    if ext == ".mp3":
+        sr, dur = _probe_ffprobe(p)
+        if dur and dur > 0:
+            return Probe(date_id=date_id, relpath=relpath, sr=int(sr or -1), duration_s=float(dur))
+        return None
+
+    # WAV/FLAC: try soundfile, fallback to ffprobe
     try:
         info = sf.info(str(p))
         duration_s = float(info.frames) / float(info.samplerate)
         return Probe(date_id=date_id, relpath=relpath, sr=int(info.samplerate), duration_s=duration_s)
     except Exception:
         pass
-    # 3) torchaudio.info with sox_io backend only
-    try:
-        import torchaudio  # local import
 
-        if hasattr(torchaudio, "set_audio_backend"):
-            try:
-                torchaudio.set_audio_backend("sox_io")
-            except Exception:
-                pass
-        ti = torchaudio.info(str(p))
-        duration_s = float(ti.num_frames) / float(ti.sample_rate)
-        return Probe(date_id=date_id, relpath=relpath, sr=int(ti.sample_rate), duration_s=duration_s)
-    except Exception:
-        pass
-    # 4) librosa.get_duration
-    try:
-        import librosa
+    # Fallback to ffprobe for non-MP3
+    sr, dur = _probe_ffprobe(p)
+    if dur and dur > 0:
+        return Probe(date_id=date_id, relpath=relpath, sr=int(sr or -1), duration_s=float(dur))
 
-        duration_s = float(librosa.get_duration(path=str(p)))
-        return Probe(date_id=date_id, relpath=relpath, sr=-1, duration_s=duration_s)
-    except Exception:
-        return None
+    return None
 
 
 def uuid5_for_relpath(root: Path, relpath: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root.as_posix()}/{relpath}"))
 
 
-def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int) -> pd.DataFrame:
+def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int, log_errors: str | None = None) -> pd.DataFrame:
     rows: list[Probe] = []
+    skipped_files: list[Path] = []
+    
     with cf.ThreadPoolExecutor(max_workers=num_workers) as ex:
-        futs = [ex.submit(probe_file, root, date_id, p) for date_id, p in files]
-        for fut in cf.as_completed(futs):
+        futs = [(date_id, p, ex.submit(probe_file, root, date_id, p)) for date_id, p in files]
+        for date_id, p, fut in futs:
             pr = fut.result()
             if pr is not None and pr.duration_s > 0:
                 rows.append(pr)
+            else:
+                skipped_files.append(p)
+    
+    # Log skipped files if requested
+    if log_errors and skipped_files:
+        with open(log_errors, "w") as f:
+            for p in skipped_files:
+                f.write(f"{p}\n")
+        print(f"Logged {len(skipped_files)} skipped files to {log_errors}")
+    
     if not rows:
         return pd.DataFrame(columns=["date_id", "file_id", "relpath", "sr", "duration_s"])  # empty
     df = pd.DataFrame([r.__dict__ for r in rows])
@@ -158,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
     exts = tuple(e.strip().lstrip(".") for e in args.exts.split(",") if e.strip())
 
     files = list(list_audio_files(root, exts))
-    df = build_df(root, files, args.num_workers)
+    df = build_df(root, files, args.num_workers, args.log_errors)
     write_table(df, out, args.format)
     print(f"Wrote {len(df)} rows to {out}")
 

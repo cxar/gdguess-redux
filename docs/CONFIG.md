@@ -3,7 +3,7 @@
 Canonical commands:
 
 ```
-python -m src.data.build_manifest --root data/raw --out data/manifest.parquet --format parquet
+python -m src.data.build_manifest --root data/raw --out data/manifest.parquet --format parquet --log-errors data/manifest_errors.txt
 python -m src.data.chunk_windows --manifest data/manifest.parquet --out data/windows.parquet --win_s 30 --hop_s 10 --format parquet
 python -m src.train.train --config configs/train.yaml
 python -m src.index.build_prototypes --ckpt ckpts/best.pt --windows data/windows.parquet --out data/proto.npz
@@ -13,7 +13,7 @@ python -m src.eval.evaluate_show_level --preds runs/latest/preds.json --out repo
 ```
 
 Flags:
-- build_manifest: --exts flac,wav,mp3; --num-workers N
+- build_manifest: --exts flac,wav,mp3; --num-workers N; --log-errors errors.txt
 - chunk_windows: --win_s, --hop_s, --drop_last (default True)
 
 Future: Hydra/YAML configs under `configs/`.
