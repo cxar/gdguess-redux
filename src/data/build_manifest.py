@@ -36,12 +36,69 @@ def list_audio_files(root: Path, exts: tuple[str, ...]) -> Iterable[tuple[str, P
                     yield date_id, p
 
 
+def _probe_ffprobe(path: Path) -> tuple[int | None, float | None]:
+    import json
+    import subprocess
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=sample_rate,duration",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True)
+        data = json.loads(out)
+        streams = data.get("streams", [])
+        if not streams:
+            return None, None
+        st = streams[0]
+        sr = int(st.get("sample_rate")) if st.get("sample_rate") else None
+        dur = float(st.get("duration")) if st.get("duration") else None
+        return sr, dur
+    except Exception:
+        return None, None
+
+
 def probe_file(root: Path, date_id: str, p: Path) -> Probe | None:
+    relpath = str(p.relative_to(root))
+    # 1) Prefer ffprobe to avoid decoder crashes
+    sr, dur = _probe_ffprobe(p)
+    if dur and dur > 0:
+        return Probe(date_id=date_id, relpath=relpath, sr=int(sr or -1), duration_s=float(dur))
+    # 2) Try soundfile (libsndfile)
     try:
         info = sf.info(str(p))
         duration_s = float(info.frames) / float(info.samplerate)
-        relpath = str(p.relative_to(root))
         return Probe(date_id=date_id, relpath=relpath, sr=int(info.samplerate), duration_s=duration_s)
+    except Exception:
+        pass
+    # 3) torchaudio.info with sox_io backend only
+    try:
+        import torchaudio  # local import
+
+        if hasattr(torchaudio, "set_audio_backend"):
+            try:
+                torchaudio.set_audio_backend("sox_io")
+            except Exception:
+                pass
+        ti = torchaudio.info(str(p))
+        duration_s = float(ti.num_frames) / float(ti.sample_rate)
+        return Probe(date_id=date_id, relpath=relpath, sr=int(ti.sample_rate), duration_s=duration_s)
+    except Exception:
+        pass
+    # 4) librosa.get_duration
+    try:
+        import librosa
+
+        duration_s = float(librosa.get_duration(path=str(p)))
+        return Probe(date_id=date_id, relpath=relpath, sr=-1, duration_s=duration_s)
     except Exception:
         return None
 
@@ -56,7 +113,7 @@ def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int) -> pd.
         futs = [ex.submit(probe_file, root, date_id, p) for date_id, p in files]
         for fut in cf.as_completed(futs):
             pr = fut.result()
-            if pr is not None and pr.duration_s > 0 and pr.sr > 0:
+            if pr is not None and pr.duration_s > 0:
                 rows.append(pr)
     if not rows:
         return pd.DataFrame(columns=["date_id", "file_id", "relpath", "sr", "duration_s"])  # empty
@@ -67,6 +124,7 @@ def build_df(root: Path, files: list[tuple[str, Path]], num_workers: int) -> pd.
     df["date_id"] = df["date_id"].astype("string")
     df["file_id"] = df["file_id"].astype("string")
     df["relpath"] = df["relpath"].astype("string")
+    # allow -1 when sr unknown from fallback
     df["sr"] = df["sr"].astype("int32")
     df["duration_s"] = df["duration_s"].astype("float64")
     return df
@@ -91,6 +149,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--format", default="parquet", choices=["parquet", "csv"], help="Output format")
     ap.add_argument("--exts", default="flac,wav,mp3", help="Comma-separated extensions to include")
     ap.add_argument("--num-workers", type=int, default=max(1, (os.cpu_count() or 4)), help="Parallel workers")
+    ap.add_argument("--skip-errors", action="store_true", default=True, help="Skip unreadable files instead of failing")
+    ap.add_argument("--log-errors", type=str, default=None, help="Optional path to write skipped file paths")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
