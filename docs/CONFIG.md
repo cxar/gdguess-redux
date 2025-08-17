@@ -16,4 +16,39 @@ Flags:
 - build_manifest: --exts flac,wav,mp3; --num-workers N; --log-errors errors.txt
 - chunk_windows: --win_s, --hop_s, --drop_last (default True)
 
+## Augmentation Configuration
+
+Example augmentation pipeline config (YAML):
+```yaml
+augmentations:
+  room_ir:
+    enabled: true
+    p: 0.7  # probability of application
+    rt60_range: [0.2, 1.2]
+  
+  device_color:
+    enabled: true
+    p: 0.5
+    modes: ["phone", "laptop", "random"]
+  
+  noise:
+    enabled: true
+    p: 0.6
+    snr_range: [5, 20]
+    types: ["babble", "hvac", "traffic"]
+  
+  spec_augment:
+    enabled: true
+    p: 0.8
+    time_masks: 2
+    freq_masks: 2
+    max_time_width: 10
+    max_freq_width: 8
+  
+  mixstyle:
+    enabled: true
+    p: 0.5
+    alpha: 0.1
+```
+
 Future: Hydra/YAML configs under `configs/`.
