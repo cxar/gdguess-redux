@@ -51,4 +51,30 @@ augmentations:
     alpha: 0.1
 ```
 
+## Dataset & Sampler Configuration
+
+```yaml
+dataset:
+  windows_path: "data/windows.parquet"
+  audio_root: "/path/to/audio"
+  target_sr: 24000
+  n_mels: 80
+  n_fft: 1024
+  hop_length: 512
+  apply_augmentations: true
+
+sampler:
+  type: "lineage_aware"  # or "balanced_random"
+  batch_size: 32
+  samples_per_date: 4
+  shuffle: true
+  drop_last: true
+  seed: 42
+
+dataloader:
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+```
+
 Future: Hydra/YAML configs under `configs/`.
