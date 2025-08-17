@@ -43,7 +43,7 @@ def _probe_ffprobe(path: Path) -> tuple[int | None, float | None]:
     cmd = [
         "ffprobe",
         "-v",
-        "error",
+        "quiet",
         "-select_streams",
         "a:0",
         "-show_entries",
@@ -53,7 +53,7 @@ def _probe_ffprobe(path: Path) -> tuple[int | None, float | None]:
         str(path),
     ]
     try:
-        out = subprocess.check_output(cmd, text=True)
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
         data = json.loads(out)
         streams = data.get("streams", [])
         if not streams:
